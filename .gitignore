@@ -1,0 +1,21 @@
+# PlatformIO build artifacts and downloaded libraries
+firmware/.pio/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Secrets and local config
+.env
+.env.*
+.claude/
+
+# Compiled OTA binary — build it yourself: cd firmware && pio run
+bridge/firmware/firmware.bin
+
+# OS
+.DS_Store
+Thumbs.db
