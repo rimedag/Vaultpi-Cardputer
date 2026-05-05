@@ -11,9 +11,9 @@ static const char* WIFI_SSIDS[]  = { "YourSSID1", "YourSSID2", "" };
 static const char* WIFI_PASSES[] = { "YourPass1", "YourPass2", "" };
 
 // Control Center connection
-// Set to the IP/hostname of your Raspberry Pi running vaultpi-bridge (port 8001).
+// Set to the IP/hostname of your Raspberry Pi control center API (port 8001).
 #define BRIDGE_HOST "http://192.168.1.x:8001"
-#define BRIDGE_PSK  "your-bridge-psk"
+#define BRIDGE_PSK  "password"
 
 // Device identity
 #define DEFAULT_DEVICE_NICKNAME "CARDPUTER"
