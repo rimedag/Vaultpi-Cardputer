@@ -705,7 +705,8 @@ void updateUsbState() {
         bool bootInsert    = (bootIrq & m5::AXP2101_IRQ_VBUS_INSERT) != 0;
         bool bootRemove    = (bootIrq & m5::AXP2101_IRQ_VBUS_REMOVE) != 0;
         bool charging      = (M5Cardputer.Power.isCharging() == m5::Power_Class::is_charging);
-        g_usbConnected     = charging || (bootInsert && !bootRemove);
+        bool vbusGood      = M5Cardputer.Power.Axp2101.isVBUS();
+        g_usbConnected     = charging || vbusGood || (bootInsert && !bootRemove);
         M5Cardputer.Power.Axp2101.enableIRQ(
             m5::AXP2101_IRQ_VBUS_INSERT | m5::AXP2101_IRQ_VBUS_REMOVE);
         M5Cardputer.Power.Axp2101.clearIRQStatuses();
@@ -716,9 +717,14 @@ void updateUsbState() {
     bool hasInsert = (irq & m5::AXP2101_IRQ_VBUS_INSERT) != 0;
     bool hasRemove = (irq & m5::AXP2101_IRQ_VBUS_REMOVE) != 0;
     bool charging  = (M5Cardputer.Power.isCharging() == m5::Power_Class::is_charging);
-    if (charging)   g_usbConnected = true;
-    if (hasInsert)  g_usbConnected = true;
-    if (hasRemove)  g_usbConnected = false;
+    bool vbusGood  = M5Cardputer.Power.Axp2101.isVBUS();
+
+    if (charging || vbusGood || hasInsert) {
+        g_usbConnected = true;
+    } else if (hasRemove) {
+        g_usbConnected = false;
+    }
+
     if (hasInsert || hasRemove) M5Cardputer.Power.Axp2101.clearIRQStatuses();
 }
 
@@ -862,7 +868,14 @@ void loop() {
         if (!wasOff) {
             Keyboard_Class::KeysState ks = M5Cardputer.Keyboard.keysState();
             bool isEsc = (!ks.word.empty() && (uint8_t)ks.word[0] == 27);
-            for (uint8_t hk : ks.hid_keys) if (hk == HID_ESC) { isEsc = true; break; }
+            bool hidUp = false, hidDown = false, hidLeft = false, hidRight = false;
+            for (uint8_t hk : ks.hid_keys) {
+                if (hk == HID_ESC) { isEsc = true; }
+                if (hk == HID_UP) hidUp = true;
+                if (hk == HID_DOWN) hidDown = true;
+                if (hk == HID_LEFT) hidLeft = true;
+                if (hk == HID_RIGHT) hidRight = true;
+            }
             // Backtick key is physically labeled ESC on Cardputer — treat it as ESC
             // except when the user is actively typing text in an edit field
             if (!isEsc && !ks.word.empty() && ks.word[0] == '`' &&
@@ -877,7 +890,13 @@ void loop() {
                     escapeToMain();
                 }
             } else {
-                if (!ks.word.empty()) handleChar(ks.word[0]);
+                bool wordIsArrowCluster = !ks.word.empty() && (
+                    (ks.word[0] == ';' && hidUp) ||
+                    (ks.word[0] == '.' && hidDown) ||
+                    (ks.word[0] == ',' && hidLeft) ||
+                    (ks.word[0] == '/' && hidRight)
+                );
+                if (!ks.word.empty() && !wordIsArrowCluster) handleChar(ks.word[0]);
                 if (ks.enter) onEnter();
                 // guard against double-handling backspace (handleChar '\b' already calls handleDel)
                 bool wordWasDel = !ks.word.empty() &&
@@ -1041,6 +1060,15 @@ void escapeToMain() {
     browserUrlMode = false;
     browserLinkMode = false;
     browserLoading = false;
+    browserError[0] = '\0';
+    browserUrlBuf[0] = '\0';
+    browserFetchedUrl[0] = '\0';
+    browserLineCount = 0;
+    browserLinkCount = 0;
+    browserScroll = 0;
+    browserLinkCursor = 0;
+    browserLinkScroll = 0;
+    browserHistoryDepth = 0;
     navDepth = 0;
     current = Screen::Main;
     g_menuOpen = true;
@@ -1531,6 +1559,10 @@ void onDown() {
 void onLeft() {
     if (settingsEditMode || noteEditMode) return;
     if (current == Screen::Browser && !browserUrlMode && !browserBookmarkMode) {
+        if (browserLinkMode) {
+            browserLinkMove(-1);
+            return;
+        }
         browserScrollBy(-BR_VIS);
         return;
     }
@@ -1547,6 +1579,10 @@ void onLeft() {
 void onRight() {
     if (settingsEditMode || noteEditMode) return;
     if (current == Screen::Browser && !browserUrlMode && !browserBookmarkMode) {
+        if (browserLinkMode) {
+            browserLinkMove(1);
+            return;
+        }
         browserScrollBy(BR_VIS);
         return;
     }
@@ -1618,6 +1654,15 @@ void handleDel() {
         int len = strlen(noteEditBuf);
         if (len > 0) { noteEditBuf[len-1] = '\0'; drawNotes(); }
         else          { noteEditMode = false; drawNotes(); }
+        return;
+    }
+    if (current == Screen::Notes) {
+        if (cur() >= 0 && cur() < MAX_NOTES) {
+            notes[cur()][0] = '\0';
+            saveNote(cur(), "");
+            Audio::click();
+            drawNotes();
+        }
         return;
     }
     if (settingsEditMode) {
@@ -2376,8 +2421,13 @@ void handleChar(char c) {
 void handleHid(uint8_t hid) {
     if (hid == HID_ESC)   { escapeToMain(); return; }
     if (current == Screen::Browser && !browserUrlMode && !browserBookmarkMode) {
-        if (hid == HID_LEFT)  { browserScrollBy(-BR_VIS); return; }
-        if (hid == HID_RIGHT) { browserScrollBy(BR_VIS); return; }
+        if (browserLinkMode) {
+            if (hid == HID_UP || hid == HID_LEFT) { browserLinkMove(-1); return; }
+            if (hid == HID_DOWN || hid == HID_RIGHT) { browserLinkMove(1); return; }
+        } else {
+            if (hid == HID_LEFT)  { browserScrollBy(-BR_VIS); return; }
+            if (hid == HID_RIGHT) { browserScrollBy(BR_VIS); return; }
+        }
     }
     if (hid == HID_UP)    { onUp();    return; }
     if (hid == HID_DOWN)  { onDown();  return; }

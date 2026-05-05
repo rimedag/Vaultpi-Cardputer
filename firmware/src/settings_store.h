@@ -1,5 +1,8 @@
 #pragma once
 #include <Preferences.h>
+#include <SPI.h>
+#include <SD.h>
+#include <FS.h>
 #include "config.h"
 
 struct RuntimeConfig {
@@ -35,6 +38,31 @@ struct RuntimeConfig {
 };
 
 static RuntimeConfig rconfig;
+
+static constexpr int SD_SPI_SCK_PIN  = 40;
+static constexpr int SD_SPI_MISO_PIN = 39;
+static constexpr int SD_SPI_MOSI_PIN = 14;
+static constexpr int SD_SPI_CS_PIN   = 12;
+static constexpr const char* NOTES_DIR = "/vaultpi_notes";
+
+inline bool ensureNotesStorage() {
+    static bool tried = false;
+    static bool ready = false;
+    if (ready) return true;
+    if (!tried) {
+        tried = true;
+        SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
+        ready = SD.begin(SD_SPI_CS_PIN, SPI, 25000000);
+        if (ready && !SD.exists(NOTES_DIR)) {
+            SD.mkdir(NOTES_DIR);
+        }
+    }
+    return ready;
+}
+
+inline void notePath(int idx, char* out, size_t outLen) {
+    snprintf(out, outLen, "%s/note%d.txt", NOTES_DIR, idx + 1);
+}
 
 inline void normalizeBridgeHost(char* host, size_t maxLen) {
     if (!host || !host[0] || maxLen == 0) return;
@@ -140,6 +168,31 @@ inline void saveConfig() {
 
 // Notes stored separately so they don't bloat the main config namespace
 inline void loadNotes(char notes[][NOTE_LEN], int count) {
+    for (int i = 0; i < count; i++) {
+        notes[i][0] = '\0';
+    }
+
+    bool loadedFromSd = false;
+    if (ensureNotesStorage()) {
+        for (int i = 0; i < count; i++) {
+            char path[32];
+            notePath(i, path, sizeof(path));
+            File f = SD.open(path, FILE_READ);
+            if (!f || f.isDirectory()) {
+                if (f) f.close();
+                continue;
+            }
+            String s = f.readString();
+            f.close();
+            s.replace("\r", "");
+            s.replace("\n", " ");
+            strlcpy(notes[i], s.c_str(), NOTE_LEN);
+            loadedFromSd = true;
+        }
+    }
+
+    if (loadedFromSd) return;
+
     Preferences p;
     p.begin("vpnotes", true);
     for (int i = 0; i < count; i++) {
@@ -151,6 +204,21 @@ inline void loadNotes(char notes[][NOTE_LEN], int count) {
 }
 
 inline void saveNote(int idx, const char* text) {
+    if (ensureNotesStorage()) {
+        char path[32];
+        notePath(idx, path, sizeof(path));
+        if (SD.exists(path)) {
+            SD.remove(path);
+        }
+        if (text && text[0]) {
+            File f = SD.open(path, FILE_WRITE);
+            if (f) {
+                f.print(text);
+                f.close();
+            }
+        }
+    }
+
     Preferences p;
     p.begin("vpnotes", false);
     char k[8]; snprintf(k, sizeof(k), "n%d", idx);
