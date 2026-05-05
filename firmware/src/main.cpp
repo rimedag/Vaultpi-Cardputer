@@ -1593,6 +1593,7 @@ void handleDel() {
         return;
     }
     if (browserUrlMode && current == Screen::Browser) {
+        if (browserError[0] && browserLineCount == 0) { goBack(); return; }
         int len = strlen(browserUrlBuf);
         if (len > 0) { browserUrlBuf[len-1] = '\0'; drawBrowserUrlBar(); }
         else          { goBack(); }
