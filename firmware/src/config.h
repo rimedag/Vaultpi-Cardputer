@@ -48,7 +48,7 @@ static const char* WIFI_PASSES[] = { "YourPass1", "YourPass2", "" };
 #define SPARK_MAX  40
 
 // Notepad
-#define MAX_NOTES   4
+#define MAX_NOTES   12
 #define NOTE_LEN   80
 
 // Theme (0=P1NK 1=CYB3R 2=AMB3R 3=GH0ST 4=BL00D 5=L1ME)

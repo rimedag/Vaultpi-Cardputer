@@ -69,16 +69,16 @@ static const int N_SCREENS = (int)Screen::COUNT;
 // Main menu (menu-first home screen)
 static const char*  MAIN_LABELS[]   = {
     "DASHBOARD","SERVICES","ACTIONS","ALERTS","ACTIVITY",
-    "GITEA","IR REMOTE","NETWORK","SETTINGS","DEVICE","USB MACRO","WEB BROWSER","TERMINAL"
+    "GITEA","IR REMOTE","NETWORK","NOTES","SETTINGS","DEVICE","USB MACRO","WEB BROWSER","TERMINAL"
 };
 static const Screen MAIN_TARGETS[]  = {
     Screen::Dashboard, Screen::Services, Screen::Actions,
     Screen::Alerts,    Screen::Log,
     Screen::Gitea,     Screen::IRRemote,  Screen::NetScan,
-    Screen::Settings,   Screen::Info,
+    Screen::Notes,      Screen::Settings,   Screen::Info,
     Screen::USBMacro,  Screen::Browser,   Screen::Terminal
 };
-static const int MAIN_COUNT = 13;
+static const int MAIN_COUNT = 14;
 static bool      g_menuOpen = true;   // menu is always the home screen
 static bool      offlineMode = false;  // stay offline until user connects manually
 static bool      bridgeOnline = false;  // only push mirror/state when verified reachable
@@ -168,6 +168,7 @@ static int     sparkCount = 0;
 // Notes
 static char notes[MAX_NOTES][NOTE_LEN] = {};
 static bool notesLoaded = false;
+static int  noteVisibleCount = 1;
 
 // OTA
 static OTAInfo otaInfo;
@@ -448,6 +449,8 @@ void browserScrollBy(int delta);
 void browserScrollTo(int pos);
 void browserLinkMove(int delta);
 void openBrowserLink();
+int notesVisibleSlots();
+void refreshNotesVisibleCount();
 void showFb(FB state, const char* msg, unsigned long dur = 3000);
 void drawFb();
 void handleChar(char c);
@@ -867,19 +870,33 @@ void loop() {
         wakeDisplay();
         if (!wasOff) {
             Keyboard_Class::KeysState ks = M5Cardputer.Keyboard.keysState();
+            const auto& pressedKeys = M5Cardputer.Keyboard.keyList();
+            auto hasKey = [&](int x, int y) {
+                for (const auto& key : pressedKeys) {
+                    if (key.x == x && key.y == y) return true;
+                }
+                return false;
+            };
+            bool typingMode =
+                settingsEditMode ||
+                noteEditMode ||
+                macroEditMode ||
+                netConnectMode ||
+                (browserUrlMode && current == Screen::Browser) ||
+                (current == Screen::Terminal && termCmdMode);
             bool isEsc = (!ks.word.empty() && (uint8_t)ks.word[0] == 27);
-            bool hidUp = false, hidDown = false, hidLeft = false, hidRight = false;
             for (uint8_t hk : ks.hid_keys) {
                 if (hk == HID_ESC) { isEsc = true; }
-                if (hk == HID_UP) hidUp = true;
-                if (hk == HID_DOWN) hidDown = true;
-                if (hk == HID_LEFT) hidLeft = true;
-                if (hk == HID_RIGHT) hidRight = true;
             }
             // Backtick key is physically labeled ESC on Cardputer — treat it as ESC
             // except when the user is actively typing text in an edit field
             if (!isEsc && !ks.word.empty() && ks.word[0] == '`' &&
-                !settingsEditMode && !noteEditMode && !macroEditMode && !netConnectMode) {
+                !typingMode) {
+                isEsc = true;
+            }
+            // Cardputer ADV navigation cluster follows the official M5 mapping:
+            // Fn+`;` = Up, Fn+`,` = Left, Fn+`.` = Down, Fn+`/` = Right, Fn+` = ESC.
+            if (!isEsc && ks.fn && hasKey(0, 0) && !typingMode) {
                 isEsc = true;
             }
             if (isEsc) {
@@ -890,19 +907,33 @@ void loop() {
                     escapeToMain();
                 }
             } else {
-                bool wordIsArrowCluster = !ks.word.empty() && (
-                    (ks.word[0] == ';' && hidUp) ||
-                    (ks.word[0] == '.' && hidDown) ||
-                    (ks.word[0] == ',' && hidLeft) ||
-                    (ks.word[0] == '/' && hidRight)
-                );
-                if (!ks.word.empty() && !wordIsArrowCluster) handleChar(ks.word[0]);
-                if (ks.enter) onEnter();
+                bool handledAdvNav = false;
+                if (!typingMode && ks.fn) {
+                    if (hasKey(11, 2)) {
+                        onUp();
+                        handledAdvNav = true;
+                    } else if (hasKey(10, 3)) {
+                        onLeft();
+                        handledAdvNav = true;
+                    } else if (hasKey(11, 3)) {
+                        onDown();
+                        handledAdvNav = true;
+                    } else if (hasKey(12, 3)) {
+                        onRight();
+                        handledAdvNav = true;
+                    }
+                }
+                if (handledAdvNav) {
+                    // The ADV arrow cluster also has printable legends on these keys.
+                    // Consume the combo once so it does not also type punctuation.
+                } else {
+                    if (!ks.word.empty()) handleChar(ks.word[0]);
+                    if (ks.enter) onEnter();
+                }
                 // guard against double-handling backspace (handleChar '\b' already calls handleDel)
                 bool wordWasDel = !ks.word.empty() &&
                     ((uint8_t)ks.word[0] == '\b' || (uint8_t)ks.word[0] == 127);
                 if (ks.del && !wordWasDel) handleDel();
-                for (uint8_t hk : ks.hid_keys) handleHid(hk);
             }
         }
     }
@@ -1016,7 +1047,10 @@ void navigate(Screen s) {
     if (navDepth < 8) navHistory[navDepth++] = current;
     current = s;
     if (s == Screen::Settings) { pendingConfig = rconfig; settingsEditMode = false; }
-    if (s == Screen::Notes && !notesLoaded) { loadNotes(notes, MAX_NOTES); notesLoaded = true; }
+    if (s == Screen::Notes) {
+        if (!notesLoaded) { loadNotes(notes, MAX_NOTES); notesLoaded = true; }
+        refreshNotesVisibleCount();
+    }
     if (s == Screen::Browser) {
         browserUrlMode = true; browserUrlBuf[0] = '\0';
         browserLineCount = 0;  browserError[0]  = '\0';
@@ -1464,6 +1498,24 @@ void fetchGitea() {
     }
 }
 
+int notesVisibleSlots() {
+    int lastUsed = -1;
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (notes[i][0]) lastUsed = i;
+    }
+    int visible = max(1, lastUsed + 2);
+    return min(MAX_NOTES, visible);
+}
+
+void refreshNotesVisibleCount() {
+    noteVisibleCount = notesVisibleSlots();
+    if (noteVisibleCount < 1) noteVisibleCount = 1;
+    if (current == Screen::Notes) {
+        cur() = constrain(cur(), 0, noteVisibleCount - 1);
+        clampScroll(noteVisibleCount);
+    }
+}
+
 static uint16_t giteaHeatColor(uint8_t level) {
     switch (level) {
         case 1: return 0x0841;
@@ -1507,7 +1559,7 @@ void onUp() {
         case Screen::Log:       count = max(1,logCount);    break;
         case Screen::Alerts:    count = max(1,alertCount);  break;
         case Screen::Gitea:     count = 1;                  break;
-        case Screen::Notes:     count = MAX_NOTES;              break;
+        case Screen::Notes:     count = noteVisibleCount;       break;
         case Screen::Settings:  count = SF_COUNT;               break;
         case Screen::USBMacro:  count = 5;                      break;
         case Screen::NetScan:   count = max(1, netAPCount);     break;
@@ -1547,7 +1599,7 @@ void onDown() {
         case Screen::Log:       count = max(1,logCount);    break;
         case Screen::Alerts:    count = max(1,alertCount);  break;
         case Screen::Gitea:     count = 1;                  break;
-        case Screen::Notes:     count = MAX_NOTES;              break;
+        case Screen::Notes:     count = noteVisibleCount;       break;
         case Screen::Settings:  count = SF_COUNT;               break;
         case Screen::USBMacro:  count = 5;                      break;
         case Screen::NetScan:   count = max(1, netAPCount);     break;
@@ -1660,6 +1712,7 @@ void handleDel() {
         if (cur() >= 0 && cur() < MAX_NOTES) {
             notes[cur()][0] = '\0';
             saveNote(cur(), "");
+            refreshNotesVisibleCount();
             Audio::click();
             drawNotes();
         }
@@ -1787,6 +1840,7 @@ void onEnter() {
         strlcpy(notes[noteEditIdx], noteEditBuf, NOTE_LEN);
         saveNote(noteEditIdx, noteEditBuf);
         noteEditMode = false;
+        refreshNotesVisibleCount();
         Audio::ok();
         drawNotes();
         return;
@@ -2121,7 +2175,7 @@ void handleChar(char c) {
                 termCmdBuf[len] = c; termCmdBuf[len+1] = '\0';
                 drawTerminal();
             }
-        } else if (c == '/' || c == ':') {
+        } else if (c == ':') {
             termCmdMode = true;
             drawTerminal();
         }
@@ -2257,7 +2311,7 @@ void handleChar(char c) {
                 return;
             }
         }
-        if (c == '/') {
+        if (c == ':') {
             browserBookmarkMode = false;
             browserUrlMode = true;
             browserLinkMode = false;
@@ -2273,8 +2327,17 @@ void handleChar(char c) {
     if (c=='a'||c=='A'||c==','||c=='\b'||c==127) {
         if (current==Screen::Main) onLeft(); else goBack(); return;
     }
-    if (c=='d'||c=='D'||c=='/') {
+    if (c=='d'||c=='D') {
         if (current==Screen::Main) onRight(); else onEnter(); return;
+    }
+    if (c=='/') {
+        if (current == Screen::Main) { onRight(); return; }
+        if (current == Screen::IRRemote) { onRight(); return; }
+        if (current == Screen::Browser && !browserUrlMode && !browserBookmarkMode) {
+            if (browserLinkMode) browserLinkMove(1);
+            else browserScrollBy(BR_VIS);
+        }
+        return;
     }
 
     if (c=='h'||c=='H') {
@@ -2420,19 +2483,6 @@ void handleChar(char c) {
 
 void handleHid(uint8_t hid) {
     if (hid == HID_ESC)   { escapeToMain(); return; }
-    if (current == Screen::Browser && !browserUrlMode && !browserBookmarkMode) {
-        if (browserLinkMode) {
-            if (hid == HID_UP || hid == HID_LEFT) { browserLinkMove(-1); return; }
-            if (hid == HID_DOWN || hid == HID_RIGHT) { browserLinkMove(1); return; }
-        } else {
-            if (hid == HID_LEFT)  { browserScrollBy(-BR_VIS); return; }
-            if (hid == HID_RIGHT) { browserScrollBy(BR_VIS); return; }
-        }
-    }
-    if (hid == HID_UP)    { onUp();    return; }
-    if (hid == HID_DOWN)  { onDown();  return; }
-    if (hid == HID_LEFT)  { onLeft();  return; }
-    if (hid == HID_RIGHT) { onRight(); return; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3235,9 +3285,12 @@ void drawNotes() {
     drawHeader("NOTES");
 
     if (!notesLoaded) { loadNotes(notes, MAX_NOTES); notesLoaded = true; }
+    refreshNotesVisibleCount();
 
     int y = CONTENT_Y;
-    for (int i = 0; i < MAX_NOTES; i++) {
+    int visible = noteVisibleCount;
+    int addIdx = min(MAX_NOTES - 1, visible - 1);
+    for (int i = 0; i < visible; i++) {
         bool sel = (i == cur() && !noteEditMode);
         uint16_t bg = sel ? COL_SEL_BG : (i%2==0?COL_BG2:COL_BG);
         uint16_t fg = sel ? COL_SEL_FG : COL_TEXT;
@@ -3263,6 +3316,10 @@ void drawNotes() {
             M5Cardputer.Display.setTextColor(fg, bg);
             M5Cardputer.Display.setCursor(20, y+3);
             M5Cardputer.Display.print(trunc);
+        } else if (i == addIdx && visible < MAX_NOTES) {
+            M5Cardputer.Display.setTextColor(sel ? COL_AMBER : COL_DIM, bg);
+            M5Cardputer.Display.setCursor(20, y+3);
+            M5Cardputer.Display.print("+ new note");
         } else {
             M5Cardputer.Display.setTextColor(COL_DIM, bg);
             M5Cardputer.Display.setCursor(20, y+3);
@@ -3286,9 +3343,9 @@ void drawNotes() {
     }
 
     if (noteEditMode) {
-        drawFooter("type text  Enter=save  Backspace=erase", "");
+        drawFooter("type text  Enter=save  ESC=exit", "");
     } else {
-        drawFooter("WS=nav  Enter=edit  Del=clear  A=back", "");
+        drawFooter("WS=nav  Enter=edit  Del=clear  ESC=exit", "");
     }
 }
 
@@ -3455,7 +3512,7 @@ void drawTerminal() {
     } else {
         M5Cardputer.Display.fillRect(0, barY, SCREEN_W, LINE_H, COL_BG);
         char pos[12]; snprintf(pos, sizeof(pos), "%d lines", termLineCount);
-        drawFooter("WS=scroll Enter=cmd Del=clear", pos);
+        drawFooter("WS=scroll Enter=cmd :=cmd Del=clear", pos);
     }
 }
 
@@ -3621,7 +3678,7 @@ void drawBrowser() {
         M5Cardputer.Display.fillRect(trackX, trackY, 2, trackH, COL_DIM);
         M5Cardputer.Display.fillRect(trackX, thumbY, 2, thumbH, COL_AMBER);
     }
-    drawFooter(browserLinkCount > 0 ? "WS=scroll Enter=links /=url" : "WS=scroll b=bkmks /=url", pg);
+    drawFooter(browserLinkCount > 0 ? "WS=scroll Enter=links :=url" : "WS=scroll b=bkmks :=url", pg);
 }
 void fetchBrowserPage() {
     if (!wifiOk()) {
