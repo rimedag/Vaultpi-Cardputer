@@ -865,75 +865,102 @@ void runPinGate() {
 void loop() {
     M5Cardputer.update();
 
-    if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
-        bool wasOff = screenOff;
-        wakeDisplay();
-        if (!wasOff) {
-            Keyboard_Class::KeysState ks = M5Cardputer.Keyboard.keysState();
-            const auto& pressedKeys = M5Cardputer.Keyboard.keyList();
-            auto hasKey = [&](int x, int y) {
-                for (const auto& key : pressedKeys) {
-                    if (key.x == x && key.y == y) return true;
-                }
-                return false;
-            };
-            bool typingMode =
-                settingsEditMode ||
-                noteEditMode ||
-                macroEditMode ||
-                netConnectMode ||
-                (browserUrlMode && current == Screen::Browser) ||
-                (current == Screen::Terminal && termCmdMode);
-            bool isEsc = (!ks.word.empty() && (uint8_t)ks.word[0] == 27);
-            for (uint8_t hk : ks.hid_keys) {
-                if (hk == HID_ESC) { isEsc = true; }
-            }
-            // Backtick key is physically labeled ESC on Cardputer — treat it as ESC
-            // except when the user is actively typing text in an edit field
-            if (!isEsc && !ks.word.empty() && ks.word[0] == '`' &&
-                !typingMode) {
-                isEsc = true;
-            }
-            // Cardputer ADV navigation cluster follows the official M5 mapping:
-            // Fn+`;` = Up, Fn+`,` = Left, Fn+`.` = Down, Fn+`/` = Right, Fn+` = ESC.
-            if (!isEsc && ks.fn && hasKey(0, 0) && !typingMode) {
-                isEsc = true;
-            }
-            if (isEsc) {
-                if (current == Screen::Browser && browserUrlMode && browserLineCount > 0) {
-                    browserUrlMode = false;
-                    drawBrowser();
-                } else {
-                    escapeToMain();
-                }
-            } else {
-                bool handledAdvNav = false;
-                if (!typingMode && ks.fn) {
-                    if (hasKey(11, 2)) {
-                        onUp();
-                        handledAdvNav = true;
-                    } else if (hasKey(10, 3)) {
-                        onLeft();
-                        handledAdvNav = true;
-                    } else if (hasKey(11, 3)) {
-                        onDown();
-                        handledAdvNav = true;
-                    } else if (hasKey(12, 3)) {
-                        onRight();
-                        handledAdvNav = true;
+    {
+        static uint64_t lastKeyMask = 0;
+        const auto& pressedKeys = M5Cardputer.Keyboard.keyList();
+        auto keyBit = [](int x, int y) -> uint64_t {
+            if (x < 0 || x >= 14 || y < 0 || y >= 4) return 0;
+            return 1ULL << (y * 14 + x);
+        };
+
+        uint64_t keyMask = 0;
+        for (const auto& key : pressedKeys) {
+            keyMask |= keyBit(key.x, key.y);
+        }
+
+        if (keyMask == 0) {
+            lastKeyMask = 0;
+        } else if (keyMask != lastKeyMask) {
+            uint64_t newKeys = keyMask & ~lastKeyMask;
+            lastKeyMask = keyMask;
+
+            if (newKeys != 0) {
+                bool wasOff = screenOff;
+                wakeDisplay();
+                if (!wasOff) {
+                    auto hasKey = [&](int x, int y) {
+                        return (keyMask & keyBit(x, y)) != 0;
+                    };
+                    auto newlyPressed = [&](int x, int y) {
+                        return (newKeys & keyBit(x, y)) != 0;
+                    };
+                    auto isModifierCoord = [](int x, int y) {
+                        return (x == 0 && y == 2) ||  // Fn
+                               (x == 1 && y == 2) ||  // Shift
+                               (x == 0 && y == 3) ||  // Ctrl
+                               (x == 1 && y == 3) ||  // Opt
+                               (x == 2 && y == 3);    // Alt
+                    };
+
+                    bool typingMode =
+                        settingsEditMode ||
+                        noteEditMode ||
+                        macroEditMode ||
+                        netConnectMode ||
+                        (browserUrlMode && current == Screen::Browser) ||
+                        (current == Screen::Terminal && termCmdMode);
+
+                    Point2D_t ev;
+                    bool haveEvent = false;
+                    auto setEvent = [&](int x, int y) {
+                        ev.x = x;
+                        ev.y = y;
+                        haveEvent = true;
+                    };
+
+                    if (newlyPressed(0, 0)) setEvent(0, 0);          // ESC/backtick
+                    else if (newlyPressed(11, 2)) setEvent(11, 2);   // Up / ;
+                    else if (newlyPressed(10, 3)) setEvent(10, 3);   // Left / ,
+                    else if (newlyPressed(11, 3)) setEvent(11, 3);   // Down / .
+                    else if (newlyPressed(12, 3)) setEvent(12, 3);   // Right / /
+                    else if (newlyPressed(13, 2)) setEvent(13, 2);   // Enter
+                    else if (newlyPressed(13, 0)) setEvent(13, 0);   // Backspace/Delete
+                    else {
+                        for (const auto& key : pressedKeys) {
+                            if ((newKeys & keyBit(key.x, key.y)) && !isModifierCoord(key.x, key.y)) {
+                                ev = key;
+                                haveEvent = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (haveEvent) {
+                        if (ev.x == 0 && ev.y == 0) {
+                            escapeToMain();
+                        } else if (!typingMode && ev.x == 11 && ev.y == 2) {
+                            onUp();
+                        } else if (!typingMode && ev.x == 10 && ev.y == 3) {
+                            onLeft();
+                        } else if (!typingMode && ev.x == 11 && ev.y == 3) {
+                            onDown();
+                        } else if (!typingMode && ev.x == 12 && ev.y == 3) {
+                            onRight();
+                        } else if (ev.x == 13 && ev.y == 2) {
+                            onEnter();
+                        } else if (ev.x == 13 && ev.y == 0) {
+                            handleDel();
+                        } else {
+                            KeyValue_t kv = M5Cardputer.Keyboard.getKeyValue(ev);
+                            char c = (hasKey(1, 2) || M5Cardputer.Keyboard.capslocked())
+                                ? kv.value_second
+                                : kv.value_first;
+                            if ((uint8_t)c >= 0x20 || c == '\t' || c == '\n' || c == '\r' || c == '\b') {
+                                handleChar(c);
+                            }
+                        }
                     }
                 }
-                if (handledAdvNav) {
-                    // The ADV arrow cluster also has printable legends on these keys.
-                    // Consume the combo once so it does not also type punctuation.
-                } else {
-                    if (!ks.word.empty()) handleChar(ks.word[0]);
-                    if (ks.enter) onEnter();
-                }
-                // guard against double-handling backspace (handleChar '\b' already calls handleDel)
-                bool wordWasDel = !ks.word.empty() &&
-                    ((uint8_t)ks.word[0] == '\b' || (uint8_t)ks.word[0] == 127);
-                if (ks.del && !wordWasDel) handleDel();
             }
         }
     }
