@@ -11,8 +11,8 @@
 #include "display.h"
 
 // Bump this whenever firmware changes (matches bridge latest.json metadata)
-#define FW_VERSION      "2.5.1"
-#define FW_VERSION_NUM  20501   // major*10000 + minor*100 + patch
+#define FW_VERSION      "1.0.0"
+#define FW_VERSION_NUM  10000   // major*10000 + minor*100 + patch
 
 struct OTAInfo {
     bool    available   = false;

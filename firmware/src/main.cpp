@@ -444,6 +444,8 @@ void fetchBrowserPage();
 void drawBrowser();
 void drawTerminal();
 void fetchTerminalExec();
+void termAppendLine(const char* line);
+void termAppendWrapped(const char* text);
 void drawBrowserUrlBar();
 void browserScrollBy(int delta);
 void browserScrollTo(int pos);
@@ -1686,6 +1688,7 @@ void handleDel() {
         if (termCmdMode) {
             int len = strlen(termCmdBuf);
             if (len > 0) { termCmdBuf[len-1] = '\0'; drawTerminal(); }
+            else { goBack(); }
         } else {
             termLineCount = 0; termScroll = 0;
             termCmdMode = true; drawTerminal();
@@ -3535,18 +3538,50 @@ void drawTerminal() {
         M5Cardputer.Display.setCursor(2, barY + 3);
         M5Cardputer.Display.print(bar);
         char pos[12]; snprintf(pos, sizeof(pos), "%d/%d", termLineCount, TERM_MAX_LINES);
-        drawFooter("Enter=run Del=backspace", pos);
+        drawFooter("Enter=run Del=backspace Esc=exit", pos);
     } else {
         M5Cardputer.Display.fillRect(0, barY, SCREEN_W, LINE_H, COL_BG);
         char pos[12]; snprintf(pos, sizeof(pos), "%d lines", termLineCount);
-        drawFooter("WS=scroll Enter=cmd :=cmd Del=clear", pos);
+        drawFooter("WS=scroll Enter=cmd Del=clear Esc=exit", pos);
+    }
+}
+
+void termAppendLine(const char* line) {
+    if (termLineCount >= TERM_MAX_LINES) {
+        for (int i = 1; i < TERM_MAX_LINES; i++) {
+            strlcpy(termLines[i - 1], termLines[i], TERM_LINE_LEN + 1);
+        }
+        termLineCount = TERM_MAX_LINES - 1;
+    }
+    strlcpy(termLines[termLineCount++], line ? line : "", TERM_LINE_LEN + 1);
+}
+
+void termAppendWrapped(const char* text) {
+    if (!text || !text[0]) {
+        termAppendLine("");
+        return;
+    }
+
+    const char* p = text;
+    while (*p) {
+        char chunk[TERM_LINE_LEN + 1];
+        int n = 0;
+        while (p[n] && p[n] != '\n' && n < TERM_LINE_LEN) {
+            chunk[n] = p[n];
+            n++;
+        }
+        chunk[n] = '\0';
+        termAppendLine(chunk);
+
+        p += n;
+        if (*p == '\n') p++;
+        if (n == 0 && *p) p++;
     }
 }
 
 void fetchTerminalExec() {
     if (!wifiOk()) {
-        if (termLineCount < TERM_MAX_LINES)
-            strlcpy(termLines[termLineCount++], "[WiFi offline]", TERM_LINE_LEN + 1);
+        termAppendLine("[WiFi offline]");
         termCmdMode = false;
         termScroll = max(0, termLineCount - TERM_VIS);
         drawTerminal();
@@ -3567,33 +3602,40 @@ void fetchTerminalExec() {
     termBusy = false;
 
     // Echo the command
-    char echo[TERM_LINE_LEN + 1];
+    char echo[96];
     snprintf(echo, sizeof(echo), "$ %s", termCmdBuf);
-    if (termLineCount < TERM_MAX_LINES) strlcpy(termLines[termLineCount++], echo, TERM_LINE_LEN + 1);
+    termAppendWrapped(echo);
 
     if (code != 200) {
         char err[TERM_LINE_LEN + 1];
         if (code < 0) strlcpy(err, "[no response]", sizeof(err));
         else snprintf(err, sizeof(err), "[HTTP %d]", code);
-        if (termLineCount < TERM_MAX_LINES) strlcpy(termLines[termLineCount++], err, TERM_LINE_LEN + 1);
+        termAppendLine(err);
     } else {
         bool ok = doc["ok"] | false;
-        if (!ok) {
-            const char* msg = doc["error"] | "error";
-            if (termLineCount < TERM_MAX_LINES) {
-                char el[TERM_LINE_LEN + 1];
-                strlcpy(el, msg, sizeof(el));
-                strlcpy(termLines[termLineCount++], el, TERM_LINE_LEN + 1);
-            }
-        } else {
-            JsonArray arr = doc["lines"].as<JsonArray>();
-            for (JsonVariant v : arr) {
-                if (termLineCount >= TERM_MAX_LINES) break;
-                strlcpy(termLines[termLineCount++], v.as<const char*>(), TERM_LINE_LEN + 1);
-            }
-            bridgeOnline = true;
-            offlineMode = false;
+        JsonArray arr = doc["lines"].as<JsonArray>();
+        int beforeLines = termLineCount;
+        for (JsonVariant v : arr) {
+            const char* line = v.as<const char*>();
+            if (line) termAppendWrapped(line);
         }
+
+        int exitCode = doc["exit_code"] | 0;
+        if (!ok) {
+            if (termLineCount == beforeLines) {
+                const char* msg = doc["error"] | "command failed";
+                termAppendWrapped(msg);
+            }
+            char status[24];
+            snprintf(status, sizeof(status), "[exit %d]", exitCode);
+            termAppendLine(status);
+        } else if (termLineCount == beforeLines) {
+            char status[32];
+            snprintf(status, sizeof(status), "[exit %d, no output]", exitCode);
+            termAppendLine(status);
+        }
+        bridgeOnline = true;
+        offlineMode = false;
     }
 
     termCmdBuf[0] = '\0';
@@ -3805,7 +3847,7 @@ void fetchBrowserPage() {
         browserUrlMode = true;
     } else {
         browserUrlMode = false;
-        browserLinkMode = browserLinkCount > 0;
+        browserLinkMode = false;
     }
     bridgeOnline = true;
     offlineMode = false;
