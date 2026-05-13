@@ -1,3 +1,5 @@
+<img width="1080" height="1440" alt="cardputer-zero-diy-v0-kisizx9bldzg1" src="https://github.com/user-attachments/assets/8460d64b-fbb0-4963-af8d-94075090d0ac" />
+<img width="1080" height="1440" alt="cardputer-zero-diy-v0-pr6mod1aldzg1" src="https://github.com/user-attachments/assets/da692928-080c-4bfc-a740-37767c055e3e" />
 # VaultPi Cardputer
 
 A portable control panel for a Raspberry Pi home server, running on the **M5Stack Cardputer** (ESP32-S3). Monitor system health, manage services and actions, browse the web, fire IR remotes, and more — from a pocketable device with a full QWERTY keyboard.
@@ -26,6 +28,7 @@ The Cardputer connects directly to the VaultPi Control Center over Wi-Fi. All yo
 ---
 
 ## Features
+![Uploading cardputer-zero-diy-v0-kisizx9bldzg1.webp…]()
 
 ### Screens
 
@@ -59,6 +62,7 @@ The Cardputer connects directly to the VaultPi Control Center over Wi-Fi. All yo
 - **Idle animation** (rain scene) on the main menu when enabled
 
 ---
+<img width="1080" height="1440" alt="cardputer-zero-diy-v0-ox3gt61bldzg1" src="https://github.com/user-attachments/assets/f8c7ce91-32b5-4986-bed5-c03e45751187" />
 
 ## Quick Start
 
