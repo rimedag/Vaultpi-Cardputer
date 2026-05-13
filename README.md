@@ -1,4 +1,4 @@
-<img width="1080" height="1440" alt="cardputer-zero-diy-v0-kisizx9bldzg1" src="https://github.com/user-attachments/assets/8460d64b-fbb0-4963-af8d-94075090d0ac" />
+
 <img width="1080" height="1440" alt="cardputer-zero-diy-v0-pr6mod1aldzg1" src="https://github.com/user-attachments/assets/da692928-080c-4bfc-a740-37767c055e3e" />
 # VaultPi Cardputer
 
@@ -25,6 +25,8 @@ VaultPi Control Center  :8001
 
 The Cardputer connects directly to the VaultPi Control Center over Wi-Fi. All you need is the control center IP address and the Cardputer password configured in its settings.
 
+---
+<img width="1080" height="1440" alt="cardputer-zero-diy-v0-kisizx9bldzg1" src="https://github.com/user-attachments/assets/8460d64b-fbb0-4963-af8d-94075090d0ac" />
 ---
 
 ## Features
